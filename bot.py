@@ -51,24 +51,26 @@ def save_data(filename: str, data: list):
 # --- Основная логика бота для постинга (ПОЛНОСТЬЮ ПЕРЕПИСАНА) ---
 # --- Основная логика бота для постинга (ВЕРСИЯ С ОТЛАДКОЙ) ---
 # --- Основная логика бота для постинга (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
+# --- Основная логика бота для постинга (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск задачи по отправке изображений из Cloudinary.")
 
     try:
-        # ИСПРАВЛЕНО: Используем resources_by_asset_folder для поиска по папке, а не по префиксу
+        # ИСПРАВЛЕНО: Передаем параметры как прямые именованные аргументы (keyword arguments),
+        # а не вложенным словарем.
         response = cloudinary.api.resources_by_asset_folder(
-            CLOUDINARY_FOLDER, # Просто передаем имя папки
-            params={ "type": "upload", "max_results": 500 }
+            CLOUDINARY_FOLDER,
+            type="upload",
+            max_results=500
         )
         images = response.get('resources', [])
     except Exception as e:
         logger.error(f"Не удалось получить список файлов из Cloudinary: {e}")
-        # Если пришла ошибка "Folder not found", выводим полезное сообщение
-        if 'Folder not found' in str(e):
-             await context.bot.send_message(
-                chat_id=ADMIN_USER_ID,
-                text=f"Ошибка: папка с именем '{CLOUDINARY_FOLDER}' не найдена в Cloudinary. Проверьте правильность имени."
-            )
+        # Уведомим администратора о проблеме
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=f"Произошла ошибка при получении списка файлов из Cloudinary. Подробности в логах Render."
+        )
         return
 
     if not images:
@@ -89,16 +91,20 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         for channel_id in channels:
             try:
                 await context.bot.send_photo(chat_id=channel_id, photo=image_url)
-                successful_sends += 1; await asyncio.sleep(0.1)
-            except Exception as e: logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
+                successful_sends += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
 
     user_ids = load_data(USERS_FILE)
     if user_ids:
         for user_id in user_ids:
             try:
-                await context.bot.send_photo(chat_id=user_id, photo=image_url)
-                successful_sends += 1; await asyncio.sleep(0.1)
-            except Exception as e: logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
+                await context.bot.send_photo(chat_id=user_id, photo=photo_url)
+                successful_sends += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
     # Удаление работает как и раньше, по Public ID
     if successful_sends > 0:
@@ -107,7 +113,6 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Изображение {image_public_id} успешно разослано и удалено из Cloudinary.")
         except Exception as e:
             logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
-
 # --- Обработчик сохранения фото (ПОЛНОСТЬЮ ПЕРЕПИСАН) ---
 async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Получаю картинку и загружаю в облако...")
@@ -205,5 +210,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
