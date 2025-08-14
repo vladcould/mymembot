@@ -158,16 +158,24 @@ def index():
 
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook_handler():
-    """Принимает обновления от Telegram и передает их боту."""
-    # Используем threading, чтобы не блокировать веб-сервер
-    threading.Thread(target=process_update_sync).start()
+    """Получает данные и передает их в фоновый обработчик."""
+    # СНАЧАЛА получаем данные, ПОКА мы внутри контекста запроса
+    update_data = request.get_json(force=True)
+    # ТЕПЕРЬ передаем эти данные в поток
+    threading.Thread(target=process_update_sync, args=(update_data,)).start()
     return 'ok', 200
 
-def process_update_sync():
+def process_update_sync(update_data): # <-- Теперь она принимает данные как аргумент
     """Синхронная обертка для асинхронной обработки."""
     import asyncio
-    update_data = request.get_json(force=True)
+    # Мы больше не пытаемся получить данные из request, они уже есть
     update = Update.de_json(data=update_data, bot=ptb_app.bot)
+    
+    # Запускаем асинхронную обработку в новом цикле событий
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(ptb_app.process_update(update))
+    loop.close()
     
     # Запускаем асинхронную обработку в новом цикле событий
     loop = asyncio.new_event_loop()
@@ -183,3 +191,4 @@ if __name__ == "__main__":
     # Запускаем веб-сервер Flask
     # Render сам выберет порт, поэтому мы используем os.environ.get('PORT', 8000)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
+
