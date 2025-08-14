@@ -3,7 +3,6 @@ import random
 import json
 import logging
 import time
-import threading
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -26,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Инициализация Flask-приложения ---
+# --- Инициализация Flask-приложения, которое запустит Gunicorn ---
 app = Flask(__name__)
 
 # --- Функции для работы с данными ---
@@ -83,14 +82,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text("Вы уже подписаны на рассылку.")
     if user.id == ADMIN_USER_ID:
         await update.message.reply_text("<b>Админ-панель:</b>\n\n`/addchannel @имя_канала`\n`/removechannel @имя_канала`\n`/listchannels`\n`/forcepost` - разослать картинку сейчас\n`/listusers` - показать всех подписчиков", parse_mode='Markdown')
-
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id; user_ids = load_data(USERS_FILE)
     if user_id in user_ids:
         user_ids.remove(user_id); save_data(USERS_FILE, user_ids); logger.info(f"Пользователь {user_id} отписался от рассылки.")
         await update.message.reply_text("Вы успешно отписались от рассылки.")
     else: await update.message.reply_text("Вы и не были подписаны.")
-
 async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     photo = update.message.photo[-1]; file_id = photo.file_id; file_name = f"{file_id}.jpg"; file_path = os.path.join(IMAGES_DIR, file_name)
     if os.path.exists(file_path): await update.message.reply_text("Эта картинка уже есть в базе."); return
@@ -98,7 +95,6 @@ async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         new_file = await photo.get_file(); await new_file.download_to_drive(file_path)
         logger.info(f"Администратор добавил новую картинку: {file_name}"); await update.message.reply_text("Картинка успешно сохранена в базу!")
     except Exception as e: logger.error(f"Не удалось сохранить картинку: {e}"); await update.message.reply_text(f"Произошла ошибка при сохранении: {e}")
-
 async def unauthorized_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("Извините, эта команда только для моего администратора.")
 async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
@@ -127,7 +123,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"Список подписчиков (всего {len(user_ids)}):\n\n" + "\n".join([str(uid) for uid in user_ids])
     await update.message.reply_text(message)
 
-# --- Инициализация и запуск ---
+# --- Инициализация бота ---
 # Создаем объект приложения один раз
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 ptb_app.add_handler(CommandHandler("start", start))
@@ -146,8 +142,9 @@ if job_queue:
     job_queue.run_repeating(post_image_job, interval=3600, first=10)
 
 async def main():
-    """Основная асинхронная функция для инициализации."""
+    """Основная функция для инициализации бота и его компонентов."""
     await ptb_app.initialize()
+    # Эта очередь будет использоваться для передачи обновлений от Flask к боту
     await ptb_app.start()
     if ptb_app.job_queue:
         await ptb_app.job_queue.start()
@@ -168,8 +165,6 @@ def index():
     """Пустая главная страница для проверки доступности."""
     return "Bot is running!", 200
 
-if __name__ == "__main__":
-    # Запускаем инициализацию бота
-    asyncio.run(main())
-    # Запускаем веб-сервер Flask в отдельном потоке, чтобы он не блокировал
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))).start()
+# --- Точка входа, которую использует Gunicorn ---
+# Эта часть кода выполнится ОДИН РАЗ при старте сервера на Render
+asyncio.run(main())
