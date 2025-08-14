@@ -100,27 +100,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     all_users = load_data(USERS_FILE)
 
-    # Общая логика для всех пользователей
+    # --- ЛОГИКА ДЛЯ АДМИНИСТРАТОРА ---
+    if user.id == ADMIN_USER_ID:
+        # Тихо добавляем админа в базу, если его там нет, для целостности данных
+        if user.id not in all_users:
+            all_users.append(user.id)
+            save_data(USERS_FILE, all_users)
+            logger.info(f"Администратор (ID: {user.id}) впервые запустил бота.")
+
+        # Собираем текст админ-панели. Команды пишем как обычный текст.
+        # А для аргументов используем <code>, чтобы их было удобно копировать.
+        admin_text = (
+            "<b>Админ-панель:</b>\n\n"
+            "/addchannel <code>@имя_канала</code>\n"
+            "/removechannel <code>@имя_канала</code>\n"
+            "/listchannels\n"
+            "/forcepost\n"
+            "/listusers"
+        )
+        # Отправляем ТОЛЬКО админ-панель с HTML-разметкой
+        await update.message.reply_text(admin_text, parse_mode='HTML')
+        return # Важно! Завершаем выполнение функции, чтобы не было лишних сообщений.
+
+    # --- ЛОГИКА ДЛЯ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ---
     if user.id not in all_users:
         all_users.append(user.id)
         save_data(USERS_FILE, all_users)
         logger.info(f"Новый подписчик: {user.first_name} (ID: {user.id})")
-        await update.message.reply_text("Привет! Вы подписались на ежедневную рассылку картинок.\nЧтобы отписаться, в любой момент используйте команду /stop.")
+        await update.message.reply_text(
+            "Привет! Вы подписались на ежедневную рассылку картинок.\n"
+            "Чтобы отписаться, в любой момент используйте команду /stop."
+        )
     else:
         await update.message.reply_text("Вы уже подписаны на рассылку.")
-
-    # Отдельное сообщение ТОЛЬКО для администратора с правильным форматированием
-    if user.id == ADMIN_USER_ID:
-        admin_text = (
-            "<b>Админ-панель:</b>\n\n"
-            "<code>/addchannel @имя_канала</code>\n"
-            "<code>/removechannel @имя_канала</code>\n"
-            "<code>/listchannels</code>\n"
-            "<code>/forcepost</code> - разослать картинку сейчас\n"
-            "<code>/listusers</code> - показать всех подписчиков"
-        )
-        # Используем parse_mode='HTML'
-        await update.message.reply_text(admin_text, parse_mode='HTML')
+        
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_ids = load_data(USERS_FILE)
@@ -264,4 +277,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
