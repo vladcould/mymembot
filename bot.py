@@ -50,22 +50,25 @@ def save_data(filename: str, data: list):
 
 # --- Основная логика бота для постинга (ПОЛНОСТЬЮ ПЕРЕПИСАНА) ---
 # --- Основная логика бота для постинга (ВЕРСИЯ С ОТЛАДКОЙ) ---
+# --- Основная логика бота для постинга (ИСПРАВЛЕННАЯ ВЕРСИЯ) ---
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск задачи по отправке изображений из Cloudinary.")
 
     try:
-        # Получаем список всех ресурсов (картинок) из нашей папки в Cloudinary
-        response = cloudinary.api.resources(
-            type="upload",
-            prefix=f"{CLOUDINARY_FOLDER}/", # Указываем папку
-            max_results=500 # Максимум файлов для получения за раз
+        # ИСПРАВЛЕНО: Используем resources_by_asset_folder для поиска по папке, а не по префиксу
+        response = cloudinary.api.resources_by_asset_folder(
+            CLOUDINARY_FOLDER, # Просто передаем имя папки
+            params={ "type": "upload", "max_results": 500 }
         )
-        # --- ДОБАВЛЕНА ОТЛАДОЧНАЯ СТРОКА ---
-        logger.info(f"Полный ответ от Cloudinary: {response}")
-        # ------------------------------------
         images = response.get('resources', [])
     except Exception as e:
         logger.error(f"Не удалось получить список файлов из Cloudinary: {e}")
+        # Если пришла ошибка "Folder not found", выводим полезное сообщение
+        if 'Folder not found' in str(e):
+             await context.bot.send_message(
+                chat_id=ADMIN_USER_ID,
+                text=f"Ошибка: папка с именем '{CLOUDINARY_FOLDER}' не найдена в Cloudinary. Проверьте правильность имени."
+            )
         return
 
     if not images:
@@ -73,15 +76,15 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Все изображения в Cloudinary закончились.")
         return
 
-    # (остальная часть функции без изменений)
+    # Выбираем случайное изображение из списка
     image_to_send = random.choice(images)
     image_url = image_to_send['secure_url']
     image_public_id = image_to_send['public_id']
-    logger.info(f"Выбрано изображение для рассылки: {image_url}")
+    logger.info(f"Выбрано изображение для рассылки: {image_url} (Public ID: {image_public_id})")
 
     channels = load_data(CHANNELS_FILE)
     successful_sends = 0
-    
+
     if channels:
         for channel_id in channels:
             try:
@@ -97,6 +100,7 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
                 successful_sends += 1; await asyncio.sleep(0.1)
             except Exception as e: logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
+    # Удаление работает как и раньше, по Public ID
     if successful_sends > 0:
         try:
             cloudinary.uploader.destroy(image_public_id)
@@ -201,4 +205,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
