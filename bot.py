@@ -99,6 +99,8 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     all_users = load_data(USERS_FILE)
+
+    # Общая логика для всех пользователей
     if user.id not in all_users:
         all_users.append(user.id)
         save_data(USERS_FILE, all_users)
@@ -106,9 +108,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Привет! Вы подписались на ежедневную рассылку картинок.\nЧтобы отписаться, в любой момент используйте команду /stop.")
     else:
         await update.message.reply_text("Вы уже подписаны на рассылку.")
-    if user.id == ADMIN_USER_ID:
-        await update.message.reply_text("<b>Админ-панель:</b>\n\n`/addchannel @имя_канала`\n`/removechannel @имя_канала`\n`/listchannels`\n`/forcepost` - разослать картинку сейчас\n`/listusers` - показать всех подписчиков", parse_mode='Markdown')
 
+    # Отдельное сообщение ТОЛЬКО для администратора с правильным форматированием
+    if user.id == ADMIN_USER_ID:
+        admin_text = (
+            "<b>Админ-панель:</b>\n\n"
+            "<code>/addchannel @имя_канала</code>\n"
+            "<code>/removechannel @имя_канала</code>\n"
+            "<code>/listchannels</code>\n"
+            "<code>/forcepost</code> - разослать картинку сейчас\n"
+            "<code>/listusers</code> - показать всех подписчиков"
+        )
+        # Используем parse_mode='HTML'
+        await update.message.reply_text(admin_text, parse_mode='HTML')
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_ids = load_data(USERS_FILE)
@@ -252,3 +264,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
