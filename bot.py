@@ -49,6 +49,7 @@ def save_data(filename: str, data: list):
         json.dump(unique_data, f, indent=4, ensure_ascii=False)
 
 # --- Основная логика бота для постинга (ПОЛНОСТЬЮ ПЕРЕПИСАНА) ---
+# --- Основная логика бота для постинга (ВЕРСИЯ С ОТЛАДКОЙ) ---
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск задачи по отправке изображений из Cloudinary.")
 
@@ -59,6 +60,9 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
             prefix=f"{CLOUDINARY_FOLDER}/", # Указываем папку
             max_results=500 # Максимум файлов для получения за раз
         )
+        # --- ДОБАВЛЕНА ОТЛАДОЧНАЯ СТРОКА ---
+        logger.info(f"Полный ответ от Cloudinary: {response}")
+        # ------------------------------------
         images = response.get('resources', [])
     except Exception as e:
         logger.error(f"Не удалось получить список файлов из Cloudinary: {e}")
@@ -69,36 +73,30 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Все изображения в Cloudinary закончились.")
         return
 
-    # Выбираем случайное изображение из списка
+    # (остальная часть функции без изменений)
     image_to_send = random.choice(images)
     image_url = image_to_send['secure_url']
-    image_public_id = image_to_send['public_id'] # ID для удаления
+    image_public_id = image_to_send['public_id']
     logger.info(f"Выбрано изображение для рассылки: {image_url}")
 
     channels = load_data(CHANNELS_FILE)
     successful_sends = 0
     
-    # Рассылка (логика осталась прежней, но используется URL)
     if channels:
         for channel_id in channels:
             try:
                 await context.bot.send_photo(chat_id=channel_id, photo=image_url)
-                successful_sends += 1
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
+                successful_sends += 1; await asyncio.sleep(0.1)
+            except Exception as e: logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
 
     user_ids = load_data(USERS_FILE)
     if user_ids:
         for user_id in user_ids:
             try:
                 await context.bot.send_photo(chat_id=user_id, photo=image_url)
-                successful_sends += 1
-                await asyncio.sleep(0.1)
-            except Exception as e:
-                logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
+                successful_sends += 1; await asyncio.sleep(0.1)
+            except Exception as e: logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
-    # Если была хотя бы одна успешная отправка, УДАЛЯЕМ файл из Cloudinary
     if successful_sends > 0:
         try:
             cloudinary.uploader.destroy(image_public_id)
@@ -203,3 +201,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
