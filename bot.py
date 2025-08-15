@@ -257,6 +257,8 @@ async def post_init(application: Application):
 
 def main() -> None:
     ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    
+    # Регистрация обработчиков команд
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("stop", stop))
     ptb_app.add_handler(CommandHandler("addchannel", add_channel))
@@ -264,19 +266,23 @@ def main() -> None:
     ptb_app.add_handler(CommandHandler("listchannels", list_channels))
     ptb_app.add_handler(CommandHandler("listusers", list_users))
     ptb_app.add_handler(CommandHandler("forcepost", force_post_command))
-    ptb_app.add_handler(CommandHandler("nextpost", next_post_command)) # <-- НОВОЕ: Регистрируем команду
+    ptb_app.add_handler(CommandHandler("nextpost", next_post_command))
     ptb_app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_USER_ID) & ~filters.COMMAND, save_photo_handler))
-    
-   # Новая, исправленная версия
-job_queue = ptb_app.job_queue
-if job_queue:
-    # Сохраняем задачу в контекст бота, чтобы иметь к ней доступ из других функций
-    # УБРАН ПАРАМЕТР "first=10", чтобы избежать повторных постов при перезапуске
-    post_job = job_queue.run_repeating(post_image_job, interval=10800) 
-    ptb_app.bot_data['post_job'] = post_job
 
+    job_queue = ptb_app.job_queue
+    if job_queue:
+        # Убрали 'first=10' чтобы избежать повторных постов при перезапуске
+        post_job = job_queue.run_repeating(post_image_job, interval=10800)
+        ptb_app.bot_data['post_job'] = post_job
+    # --- КОНЕЦ БЛОКА НАСТРОЙКИ РАССЫЛКИ ---
+
+    # Запуск бота
     ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
+
+
+# --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ В КОНЦЕ ФАЙЛА ---
 
 if __name__ == "__main__":
     main()
+
 
