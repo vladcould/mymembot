@@ -56,8 +56,6 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск задачи по отправке изображений из Cloudinary.")
 
     try:
-        # ИСПРАВЛЕНО: Передаем параметры как прямые именованные аргументы (keyword arguments),
-        # а не вложенным словарем.
         response = cloudinary.api.resources_by_asset_folder(
             CLOUDINARY_FOLDER,
             type="upload",
@@ -66,7 +64,6 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         images = response.get('resources', [])
     except Exception as e:
         logger.error(f"Не удалось получить список файлов из Cloudinary: {e}")
-        # Уведомим администратора о проблеме
         await context.bot.send_message(
             chat_id=ADMIN_USER_ID,
             text=f"Произошла ошибка при получении списка файлов из Cloudinary. Подробности в логах Render."
@@ -78,7 +75,6 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Все изображения в Cloudinary закончились.")
         return
 
-    # Выбираем случайное изображение из списка
     image_to_send = random.choice(images)
     image_url = image_to_send['secure_url']
     image_public_id = image_to_send['public_id']
@@ -100,13 +96,13 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     if user_ids:
         for user_id in user_ids:
             try:
-                await context.bot.send_photo(chat_id=user_id, photo=photo_url)
+                # --- ИСПРАВЛЕНО ЗДЕСЬ ---
+                await context.bot.send_photo(chat_id=user_id, photo=image_url) # Заменено photo_url на image_url
                 successful_sends += 1
                 await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
-    # Удаление работает как и раньше, по Public ID
     if successful_sends > 0:
         try:
             cloudinary.uploader.destroy(image_public_id)
@@ -210,6 +206,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
