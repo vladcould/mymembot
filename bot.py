@@ -267,13 +267,16 @@ def main() -> None:
     ptb_app.add_handler(CommandHandler("nextpost", next_post_command)) # <-- НОВОЕ: Регистрируем команду
     ptb_app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_USER_ID) & ~filters.COMMAND, save_photo_handler))
     
-    job_queue = ptb_app.job_queue
-    if job_queue:
-        # ИЗМЕНЕНО: Сохраняем задачу в контекст бота, чтобы иметь к ней доступ из других функций
-        post_job = job_queue.run_repeating(post_image_job, interval=10800, first=10)
-        ptb_app.bot_data['post_job'] = post_job
+   # Новая, исправленная версия
+job_queue = ptb_app.job_queue
+if job_queue:
+    # Сохраняем задачу в контекст бота, чтобы иметь к ней доступ из других функций
+    # УБРАН ПАРАМЕТР "first=10", чтобы избежать повторных постов при перезапуске
+    post_job = job_queue.run_repeating(post_image_job, interval=10800) 
+    ptb_app.bot_data['post_job'] = post_job
 
     ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
 
 if __name__ == "__main__":
     main()
+
