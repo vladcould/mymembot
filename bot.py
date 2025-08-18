@@ -58,11 +58,10 @@ def save_data(key: str, data: list):
         logger.error(f"Ошибка при сохранении данных в Redis по ключу '{key}': {e}")
 
 
-# --- ИЗМЕНЕННАЯ ЛОГИКА ОТПРАВКИ ---
+# --- НОВАЯ, ОБНОВЛЕННАЯ ЛОГИКА ОТПРАВКИ ИЗОБРАЖЕНИЙ ---
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Запуск задачи по отправке изображений из Cloudinary.")
+    logger.info("Запуск задачи по отправке изображений.")
     try:
-        # 1. Получаем список всех доступных изображений
         response = cloudinary.api.resources_by_asset_folder(
             CLOUDINARY_FOLDER, type="upload", max_results=500
         )
@@ -80,57 +79,59 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Все изображения в Cloudinary закончились.")
         return
 
-    # 2. Перемешиваем список изображений для случайной отправки
-    random.shuffle(images)
-
-    # 3. Составляем единый список получателей
     channels = load_data(CHANNELS_KEY)
-    users = load_data(USERS_KEY)
-    all_recipients = channels + users
+    user_ids = load_data(USERS_KEY)
 
-    logger.info(f"Начинаю рассылку. Всего получателей: {len(all_recipients)}. Доступно картинок: {len(images)}.")
+    # --- БЛОК 1: Логика для КАНАЛОВ (одно фото на всех, удаление после успеха) ---
+    if channels:
+        logger.info(f"Начинаю рассылку в {len(channels)} каналов.")
+        
+        # Выбираем ОДНО случайное изображение для ВСЕХ каналов
+        image_for_channels = random.choice(images)
+        image_url = image_for_channels['secure_url']
+        image_public_id = image_for_channels['public_id']
+        logger.info(f"Выбрано изображение для рассылки по каналам: {image_public_id}")
 
-    # 4. Проходимся по каждому получателю и отправляем ему уникальное изображение
-    for recipient_id in all_recipients:
-        # Если изображения в нашем локальном списке закончились, прерываем цикл
-        if not images:
-            logger.warning("Изображения для рассылки в этом цикле закончились.")
-            await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Изображения для рассылки в этом цикле закончились, не все получили сообщения.")
-            break
-
-        # 5. Берем следующее изображение из перемешанного списка
-        image_to_send = images.pop()
-        image_url = image_to_send['secure_url']
-        image_public_id = image_to_send['public_id']
-
-        try:
-            # 6. Отправляем изображение
-            await context.bot.send_photo(chat_id=recipient_id, photo=image_url)
-            logger.info(f"Изображение {image_public_id} успешно отправлено в чат {recipient_id}.")
-
-            # 7. СРАЗУ ПОСЛЕ УСПЕШНОЙ ОТПРАВКИ удаляем его из Cloudinary
+        successful_sends = 0
+        for channel_id in channels:
+            try:
+                await context.bot.send_photo(chat_id=channel_id, photo=image_url)
+                successful_sends += 1
+                logger.info(f"Изображение {image_public_id} успешно отправлено в канал {channel_id}.")
+                await asyncio.sleep(0.2)  # Задержка
+            except Exception as e:
+                logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
+        
+        # Проверяем, все ли отправки были успешными
+        if successful_sends == len(channels):
+            logger.info(f"Изображение было успешно отправлено во все {len(channels)} каналов. Удаляю его из Cloudinary.")
             try:
                 cloudinary.uploader.destroy(image_public_id)
                 logger.info(f"Изображение {image_public_id} успешно удалено из Cloudinary.")
             except Exception as e:
                 logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
+        else:
+            logger.warning(f"Изображение {image_public_id} НЕ будет удалено, т.к. отправка удалась только в {successful_sends} из {len(channels)} каналов.")
 
-            # Небольшая задержка, чтобы не спамить API Telegram
-            await asyncio.sleep(0.2)
-
-        except Exception as e:
-            # Если отправка не удалась, изображение НЕ удаляется и может быть использовано в следующий раз.
-            logger.error(f"Не удалось отправить изображение {image_public_id} в чат {recipient_id}: {e}")
-            # Возвращаем картинку обратно в список, чтобы попытаться отправить ее другому
-            # получателю в этом же цикле, если это временная проблема с конкретным чатом.
-            images.insert(0, image_to_send)
+    # --- БЛОК 2: Логика для ПОЛЬЗОВАТЕЛЕЙ (разные фото, БЕЗ удаления) ---
+    if user_ids:
+        logger.info(f"Начинаю рассылку {len(user_ids)} пользователям.")
+        for user_id in user_ids:
+            try:
+                # Для каждого пользователя выбираем новое случайное изображение
+                image_for_user = random.choice(images)
+                await context.bot.send_photo(chat_id=user_id, photo=image_for_user['secure_url'])
+                logger.info(f"Отправлено случайное изображение пользователю {user_id}. Изображение НЕ удаляется.")
+                await asyncio.sleep(0.2)  # Задержка
+            except Exception as e:
+                logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
 
 # --- Обработчик сохранения фото (без изменений) ---
 async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Получаю картинку и загружаю в облако...")
     photo = update.message.photo[-1]
-
+    
     try:
         new_file = await photo.get_file()
         upload_result = cloudinary.uploader.upload(
