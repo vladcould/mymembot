@@ -7,18 +7,18 @@ import cloudinary
 import cloudinary.api
 import cloudinary.uploader
 import redis
-from datetime import datetime, timezone
+from datetime import datetime, timezone # <-- НОВЫЙ ИМПОРТ
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- КОНФИГУРАЦИЯ (без изменений) ---
+# --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 8443))
 
-# --- Конфигурация Cloudinary (без изменений) ---
+# --- Конфигурация Cloudinary ---
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
     api_key=os.environ.get("CLOUDINARY_API_KEY"),
@@ -27,13 +27,13 @@ cloudinary.config(
 )
 CLOUDINARY_FOLDER = "telegram_bot_images"
 
-# --- Подключение к Redis (без изменений) ---
+# --- Подключение к Redis ---
 REDIS_URL = os.environ.get("REDIS_URL")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 CHANNELS_KEY = "telegram_bot_channels"
 USERS_KEY = "telegram_bot_users"
 
-# --- Настройка логирования (без изменений) ---
+# --- Настройка логирования ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -58,9 +58,9 @@ def save_data(key: str, data: list):
         logger.error(f"Ошибка при сохранении данных в Redis по ключу '{key}': {e}")
 
 
-# --- НОВАЯ, ОБНОВЛЕННАЯ ЛОГИКА ОТПРАВКИ ИЗОБРАЖЕНИЙ ---
+# --- Основная логика бота для постинга (без изменений) ---
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Запуск задачи по отправке изображений.")
+    logger.info("Запуск задачи по отправке изображений из Cloudinary.")
     try:
         response = cloudinary.api.resources_by_asset_folder(
             CLOUDINARY_FOLDER, type="upload", max_results=500
@@ -79,53 +79,39 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text="Внимание! Все изображения в Cloudinary закончились.")
         return
 
+    image_to_send = random.choice(images)
+    image_url = image_to_send['secure_url']
+    image_public_id = image_to_send['public_id']
+    logger.info(f"Выбрано изображение для рассылки: {image_url} (Public ID: {image_public_id})")
+
     channels = load_data(CHANNELS_KEY)
-    user_ids = load_data(USERS_KEY)
+    successful_sends = 0
 
-    # --- БЛОК 1: Логика для КАНАЛОВ (одно фото на всех, удаление после успеха) ---
     if channels:
-        logger.info(f"Начинаю рассылку в {len(channels)} каналов.")
-        
-        # Выбираем ОДНО случайное изображение для ВСЕХ каналов
-        image_for_channels = random.choice(images)
-        image_url = image_for_channels['secure_url']
-        image_public_id = image_for_channels['public_id']
-        logger.info(f"Выбрано изображение для рассылки по каналам: {image_public_id}")
-
-        successful_sends = 0
         for channel_id in channels:
             try:
                 await context.bot.send_photo(chat_id=channel_id, photo=image_url)
                 successful_sends += 1
-                logger.info(f"Изображение {image_public_id} успешно отправлено в канал {channel_id}.")
-                await asyncio.sleep(0.2)  # Задержка
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.error(f"Не удалось отправить в канал {channel_id}: {e}")
-        
-        # Проверяем, все ли отправки были успешными
-        if successful_sends == len(channels):
-            logger.info(f"Изображение было успешно отправлено во все {len(channels)} каналов. Удаляю его из Cloudinary.")
-            try:
-                cloudinary.uploader.destroy(image_public_id)
-                logger.info(f"Изображение {image_public_id} успешно удалено из Cloudinary.")
-            except Exception as e:
-                logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
-        else:
-            logger.warning(f"Изображение {image_public_id} НЕ будет удалено, т.к. отправка удалась только в {successful_sends} из {len(channels)} каналов.")
 
-    # --- БЛОК 2: Логика для ПОЛЬЗОВАТЕЛЕЙ (разные фото, БЕЗ удаления) ---
+    user_ids = load_data(USERS_KEY)
     if user_ids:
-        logger.info(f"Начинаю рассылку {len(user_ids)} пользователям.")
         for user_id in user_ids:
             try:
-                # Для каждого пользователя выбираем новое случайное изображение
-                image_for_user = random.choice(images)
-                await context.bot.send_photo(chat_id=user_id, photo=image_for_user['secure_url'])
-                logger.info(f"Отправлено случайное изображение пользователю {user_id}. Изображение НЕ удаляется.")
-                await asyncio.sleep(0.2)  # Задержка
+                await context.bot.send_photo(chat_id=user_id, photo=image_url)
+                successful_sends += 1
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
+    if successful_sends > 0:
+        try:
+            cloudinary.uploader.destroy(image_public_id)
+            logger.info(f"Изображение {image_public_id} успешно разослано и удалено из Cloudinary.")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
 
 # --- Обработчик сохранения фото (без изменений) ---
 async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,7 +131,7 @@ async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Не удалось сохранить картинку в Cloudinary: {e}")
         await update.message.reply_text(f"Произошла ошибка при сохранении в облако: {e}")
 
-# --- Команды бота (без изменений) ---
+# --- Команды бота ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     all_users = load_data(USERS_KEY)
@@ -153,6 +139,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id not in all_users:
             all_users.append(user.id)
             save_data(USERS_KEY, all_users)
+        # ИЗМЕНЕНО: Добавлена новая команда в описание
         admin_text = ("<b>Админ-панель:</b>\n\n"
                       "/addchannel <code>@имя_канала</code> - Добавить канал\n"
                       "/removechannel <code>@имя_канала</code> - Удалить канал\n"
@@ -170,24 +157,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Вы уже подписаны на рассылку.")
 
+# --- НОВАЯ КОМАНДА: Показывает время до следующего поста ---
 async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет администратору время до следующего запуска рассылки."""
     if update.effective_user.id != ADMIN_USER_ID:
         await unauthorized_user_reply(update, context)
         return
+
+    # Получаем задачу из контекста бота
     job = context.bot_data.get('post_job')
+
     if not job:
         await update.message.reply_text("Задача рассылки не найдена или еще не была запущена.")
         return
+
+    # Время следующего запуска (в UTC)
     next_run_time = job.next_t
+    
+    # Текущее время (в UTC)
     now = datetime.now(timezone.utc)
+    
+    # Вычисляем оставшееся время
     time_remaining = next_run_time - now
+    
+    # Форматируем для красивого вывода
     if time_remaining.total_seconds() > 0:
         hours, remainder = divmod(int(time_remaining.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         message = f"Следующая отправка изображений через: {hours} ч, {minutes} мин, {seconds} сек."
     else:
         message = "Рассылка должна была уже начаться или начнется с минуты на минуту."
+
     await update.message.reply_text(message)
+
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -248,7 +250,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = f"<b>Подписчики (всего {len(user_ids)}):</b>\n\n" + "\n".join([str(uid) for uid in user_ids])
     await update.message.reply_text(message, parse_mode='HTML')
 
-# --- Функции запуска (без изменений) ---
+
 async def post_init(application: Application):
     await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}", allowed_updates=Update.ALL_TYPES)
     logger.info(f"Вебхук установлен на {WEBHOOK_URL}/{BOT_TOKEN}")
@@ -256,6 +258,7 @@ async def post_init(application: Application):
 def main() -> None:
     ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
+    # Регистрация обработчиков команд
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("stop", stop))
     ptb_app.add_handler(CommandHandler("addchannel", add_channel))
@@ -268,10 +271,18 @@ def main() -> None:
 
     job_queue = ptb_app.job_queue
     if job_queue:
+        # Убрали 'first=10' чтобы избежать повторных постов при перезапуске
         post_job = job_queue.run_repeating(post_image_job, interval=10800)
         ptb_app.bot_data['post_job'] = post_job
+    # --- КОНЕЦ БЛОКА НАСТРОЙКИ РАССЫЛКИ ---
 
+    # Запуск бота
     ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
+
+
+# --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ В КОНЦЕ ФАЙЛА ---
 
 if __name__ == "__main__":
     main()
+
+
