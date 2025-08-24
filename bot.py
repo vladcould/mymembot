@@ -255,4 +255,113 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(admin_text, parse_mode='HTML')
         return
     if user.id not in all_users:
-     
+        all_users.append(user.id)
+        save_list_data(USERS_KEY, all_users)
+        logger.info(f"Новый подписчик: {user.first_name} (ID: {user.id})")
+        await update.message.reply_text("Привет! Вы подписались на рассылку картинок.\nЧтобы отписаться, используйте /stop.")
+    else:
+        await update.message.reply_text("Вы уже подписаны на рассылку.")
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_ids = load_list_data(USERS_KEY)
+    if user_id in user_ids:
+        user_ids.remove(user_id)
+        save_list_data(USERS_KEY, user_ids)
+        await update.message.reply_text("Вы успешно отписались.")
+    else:
+        await update.message.reply_text("Вы и не были подписаны.")
+
+async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
+    try:
+        channel_id = context.args[0]
+        channels = load_list_data(CHANNELS_KEY)
+        if channel_id not in channels:
+            channels.append(channel_id)
+            save_list_data(CHANNELS_KEY, channels)
+            await update.message.reply_text(f"Канал {channel_id} добавлен.")
+        else:
+            await update.message.reply_text(f"Канал {channel_id} уже в списке.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Использование: /addchannel <code>@имя_канала</code>", parse_mode='HTML')
+
+async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
+    try:
+        channel_id = context.args[0]
+        channels = load_list_data(CHANNELS_KEY)
+        if channel_id in channels:
+            channels.remove(channel_id)
+            save_list_data(CHANNELS_KEY, channels)
+            await update.message.reply_text(f"Канал {channel_id} удален.")
+        else:
+            await update.message.reply_text(f"Канала {channel_id} нет в списке.")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Использование: /removechannel <code>@имя_канала</code>", parse_mode='HTML')
+
+async def list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
+    channels = load_list_data(CHANNELS_KEY)
+    message = "<b>Каналы для постинга:</b>\n" + "\n".join(f"<code>{c}</code>" for c in channels) if channels else "Список каналов пуст."
+    await update.message.reply_text(message, parse_mode='HTML')
+    
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
+    user_ids = load_list_data(USERS_KEY)
+    if not user_ids: await update.message.reply_text("Пока нет подписчиков."); return
+    message = f"<b>Подписчики (всего {len(user_ids)}):</b>\n\n" + "\n".join([str(uid) for uid in user_ids])
+    await update.message.reply_text(message, parse_mode='HTML')
+
+async def force_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
+    await update.message.reply_text("Принудительно запускаю рассылку...")
+    context.application.create_task(post_image_job(context), update=update)
+
+async def unauthorized_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Извините, эта команда только для администратора.")
+
+async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await unauthorized_user_reply(update, context)
+        return
+    job = context.bot_data.get('post_job')
+    if not job or not job.next_t:
+        await update.message.reply_text("Задача рассылки не найдена или время следующего запуска не определено.")
+        return
+    now = datetime.now(timezone.utc)
+    time_remaining = job.next_t - now
+    if time_remaining.total_seconds() > 0:
+        hours, rem = divmod(int(time_remaining.total_seconds()), 3600)
+        minutes, seconds = divmod(rem, 60)
+        message = f"Следующая отправка изображений через: {hours} ч, {minutes} мин, {seconds} сек."
+    else:
+        message = "Рассылка должна была уже начаться или начнется с минуты на минуту."
+    await update.message.reply_text(message)
+
+async def post_init(application: Application):
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}", allowed_updates=Update.ALL_TYPES)
+    logger.info(f"Вебхук установлен на {WEBHOOK_URL}/{BOT_TOKEN}")
+
+def main() -> None:
+    ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    
+    ptb_app.add_handler(CommandHandler("start", start))
+    ptb_app.add_handler(CommandHandler("stop", stop))
+    ptb_app.add_handler(CommandHandler("addchannel", add_channel))
+    ptb_app.add_handler(CommandHandler("removechannel", remove_channel))
+    ptb_app.add_handler(CommandHandler("listchannels", list_channels))
+    ptb_app.add_handler(CommandHandler("listusers", list_users))
+    ptb_app.add_handler(CommandHandler("forcepost", force_post_command))
+    ptb_app.add_handler(CommandHandler("nextpost", next_post_command))
+    ptb_app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_USER_ID) & ~filters.COMMAND, save_photo_handler))
+
+    job_queue = ptb_app.job_queue
+    if job_queue:
+        post_job = job_queue.run_repeating(post_image_job, interval=10800)
+        ptb_app.bot_data['post_job'] = post_job
+
+    ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
+
+if __name__ == "__main__":
+    main()
