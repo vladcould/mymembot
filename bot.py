@@ -32,7 +32,6 @@ REDIS_URL = os.environ.get("REDIS_URL")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 CHANNELS_KEY = "telegram_bot_channels"
 USERS_KEY = "telegram_bot_users"
-# <<< НОВЫЙ КЛЮЧ для отслеживания прогресса по каналам
 IMAGE_PROGRESS_KEY = "telegram_bot_image_progress" 
 
 # --- Настройка логирования ---
@@ -86,11 +85,21 @@ async def handle_user_posting(context: ContextTypes.DEFAULT_TYPE, all_images: li
         logger.info("Пользователи для рассылки не найдены.")
         return
 
-    if not all_images:
+    # Получаем актуальный список изображений, так как для каналов могли что-то удалить
+    try:
+        response = cloudinary.api.resources_by_asset_folder(
+            CLOUDINARY_FOLDER, type="upload", max_results=500
+        )
+        current_images = response.get('resources', [])
+    except Exception as e:
+        logger.error(f"Не удалось получить список файлов для рассылки пользователям: {e}")
+        return
+        
+    if not current_images:
         logger.warning("Нет изображений для рассылки пользователям.")
         return
 
-    image_to_send = random.choice(all_images)
+    image_to_send = random.choice(current_images)
     image_url = image_to_send['secure_url']
     image_public_id = image_to_send['public_id']
     logger.info(f"Для пользователей выбрано изображение: {image_public_id}")
@@ -104,17 +113,14 @@ async def handle_user_posting(context: ContextTypes.DEFAULT_TYPE, all_images: li
         except Exception as e:
             logger.warning(f"Не удалось отправить пользователю {user_id}: {e}")
 
-    # Если хотя бы одна отправка была успешной, удаляем файл
     if successful_sends > 0:
         try:
-            # Важно: это изображение может быть еще нужно для каналов.
-            # По ТЗ для юзеров логика своя, поэтому оно удаляется.
-            # Если нужно, чтобы оно не удалялось, эту строку надо убрать.
             cloudinary.uploader.destroy(image_public_id)
             logger.info(f"Изображение {image_public_id} разослано пользователям и удалено.")
         except Exception as e:
             logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
 
+# <<< ИСПРАВЛЕННАЯ ЛОГИКА ДЛЯ КАНАЛОВ >>>
 async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images: list):
     """Обрабатывает рассылку по каналам (уникальное изображение для каждого)."""
     logger.info("Начало рассылки по каналам.")
@@ -131,32 +137,43 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
     progress = load_dict_data(IMAGE_PROGRESS_KEY)
     all_channels_set = set(channels)
     
-    # Перемешиваем изображения, чтобы рассылка была более случайной
-    random.shuffle(all_images)
+    # Создаем копию списка, из которой будем удалять использованные картинки
+    images_pool = all_images.copy()
+    random.shuffle(images_pool)
 
     # 1. Отправляем по одному изображению в каждый канал
     for channel_id in channels:
-        sent_this_run = False
-        for image in all_images:
+        image_sent_to_channel = False
+        # Итерируемся в обратном порядке, чтобы безопасно удалять элементы
+        for i in range(len(images_pool) - 1, -1, -1):
+            image = images_pool[i]
             public_id = image['public_id']
+            
             # Проверяем, было ли это изображение уже отправлено в ЭТОТ канал
             if channel_id not in progress.get(public_id, []):
                 try:
                     await context.bot.send_photo(chat_id=channel_id, photo=image['secure_url'])
                     logger.info(f"Отправлено изображение {public_id} в канал {channel_id}.")
+                    
                     # Обновляем прогресс
                     progress.setdefault(public_id, []).append(channel_id)
-                    sent_this_run = True
+                    
+                    # Удаляем использованное изображение из пула для ЭТОГО запуска,
+                    # чтобы оно не было отправлено в другой канал сейчас же.
+                    del images_pool[i]
+                    
+                    image_sent_to_channel = True
                     await asyncio.sleep(0.1)
                     break # Переходим к следующему каналу
+
                 except Exception as e:
                     logger.error(f"Не удалось отправить {public_id} в {channel_id}: {e}")
         
-        if not sent_this_run:
+        if not image_sent_to_channel:
             logger.warning(f"Для канала {channel_id} не нашлось ни одного нового изображения.")
             await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Внимание! Для канала {channel_id} закончились уникальные изображения. Цикл скоро начнется заново.")
 
-    # 2. Проверяем, какие изображения завершили свой цикл (отправлены во все каналы)
+    # 2. Проверяем, какие изображения завершили свой цикл
     completed_ids = []
     for public_id, sent_to_channels in progress.items():
         if all_channels_set.issubset(set(sent_to_channels)):
@@ -166,7 +183,6 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
     if completed_ids:
         logger.info(f"Найдены завершенные изображения для удаления: {completed_ids}")
         try:
-            # Cloudinary API позволяет удалять до 100 ID за раз
             for i in range(0, len(completed_ids), 100):
                 chunk = completed_ids[i:i + 100]
                 cloudinary.api.delete_resources(chunk)
@@ -174,9 +190,9 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
         except Exception as e:
             logger.error(f"Ошибка при массовом удалении из Cloudinary: {e}")
         
-        # Удаляем записи о них из нашего трекера прогресса
         for public_id in completed_ids:
-            del progress[public_id]
+            if public_id in progress:
+                del progress[public_id]
             
     # 4. Сохраняем обновленный прогресс в Redis
     save_dict_data(IMAGE_PROGRESS_KEY, progress)
@@ -221,7 +237,7 @@ async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"Произошла ошибка при сохранении в облако: {e}")
 
 
-# --- Команды бота (используем новые функции для работы с Redis) ---
+# --- Команды бота (без изменений) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     all_users = load_list_data(USERS_KEY)
@@ -239,115 +255,4 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(admin_text, parse_mode='HTML')
         return
     if user.id not in all_users:
-        all_users.append(user.id)
-        save_list_data(USERS_KEY, all_users)
-        logger.info(f"Новый подписчик: {user.first_name} (ID: {user.id})")
-        await update.message.reply_text("Привет! Вы подписались на рассылку картинок.\nЧтобы отписаться, используйте /stop.")
-    else:
-        await update.message.reply_text("Вы уже подписаны на рассылку.")
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_ids = load_list_data(USERS_KEY)
-    if user_id in user_ids:
-        user_ids.remove(user_id)
-        save_list_data(USERS_KEY, user_ids)
-        await update.message.reply_text("Вы успешно отписались.")
-    else:
-        await update.message.reply_text("Вы и не были подписаны.")
-
-async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
-    try:
-        channel_id = context.args[0]
-        channels = load_list_data(CHANNELS_KEY)
-        if channel_id not in channels:
-            channels.append(channel_id)
-            save_list_data(CHANNELS_KEY, channels)
-            await update.message.reply_text(f"Канал {channel_id} добавлен.")
-        else:
-            await update.message.reply_text(f"Канал {channel_id} уже в списке.")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Использование: /addchannel <code>@имя_канала</code>", parse_mode='HTML')
-
-async def remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
-    try:
-        channel_id = context.args[0]
-        channels = load_list_data(CHANNELS_KEY)
-        if channel_id in channels:
-            channels.remove(channel_id)
-            save_list_data(CHANNELS_KEY, channels)
-            await update.message.reply_text(f"Канал {channel_id} удален.")
-        else:
-            await update.message.reply_text(f"Канала {channel_id} нет в списке.")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Использование: /removechannel <code>@имя_канала</code>", parse_mode='HTML')
-
-async def list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
-    channels = load_list_data(CHANNELS_KEY)
-    message = "<b>Каналы для постинга:</b>\n" + "\n".join(f"<code>{c}</code>" for c in channels) if channels else "Список каналов пуст."
-    await update.message.reply_text(message, parse_mode='HTML')
-    
-async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
-    user_ids = load_list_data(USERS_KEY)
-    if not user_ids: await update.message.reply_text("Пока нет подписчиков."); return
-    message = f"<b>Подписчики (всего {len(user_ids)}):</b>\n\n" + "\n".join([str(uid) for uid in user_ids])
-    await update.message.reply_text(message, parse_mode='HTML')
-
-async def force_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID: await unauthorized_user_reply(update, context); return
-    await update.message.reply_text("Принудительно запускаю рассылку...")
-    context.application.create_task(post_image_job(context), update=update)
-
-# --- Остальные команды без изменений ---
-
-async def unauthorized_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Извините, эта команда только для администратора.")
-
-async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        await unauthorized_user_reply(update, context)
-        return
-    job = context.bot_data.get('post_job')
-    if not job or not job.next_t:
-        await update.message.reply_text("Задача рассылки не найдена или время следующего запуска не определено.")
-        return
-    now = datetime.now(timezone.utc)
-    time_remaining = job.next_t - now
-    if time_remaining.total_seconds() > 0:
-        hours, rem = divmod(int(time_remaining.total_seconds()), 3600)
-        minutes, seconds = divmod(rem, 60)
-        message = f"Следующая отправка изображений через: {hours} ч, {minutes} мин, {seconds} сек."
-    else:
-        message = "Рассылка должна была уже начаться или начнется с минуты на минуту."
-    await update.message.reply_text(message)
-
-async def post_init(application: Application):
-    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}", allowed_updates=Update.ALL_TYPES)
-    logger.info(f"Вебхук установлен на {WEBHOOK_URL}/{BOT_TOKEN}")
-
-def main() -> None:
-    ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    
-    ptb_app.add_handler(CommandHandler("start", start))
-    ptb_app.add_handler(CommandHandler("stop", stop))
-    ptb_app.add_handler(CommandHandler("addchannel", add_channel))
-    ptb_app.add_handler(CommandHandler("removechannel", remove_channel))
-    ptb_app.add_handler(CommandHandler("listchannels", list_channels))
-    ptb_app.add_handler(CommandHandler("listusers", list_users))
-    ptb_app.add_handler(CommandHandler("forcepost", force_post_command))
-    ptb_app.add_handler(CommandHandler("nextpost", next_post_command))
-    ptb_app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_USER_ID) & ~filters.COMMAND, save_photo_handler))
-
-    job_queue = ptb_app.job_queue
-    if job_queue:
-        post_job = job_queue.run_repeating(post_image_job, interval=10800)
-        ptb_app.bot_data['post_job'] = post_job
-
-    ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
-
-if __name__ == "__main__":
-    main()
+     
