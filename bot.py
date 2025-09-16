@@ -325,12 +325,20 @@ async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await unauthorized_user_reply(update, context)
         return
-    job = context.bot_data.get('post_job')
-    if not job or not job.next_t:
-        await update.message.reply_text("Задача рассылки не найдена или время следующего запуска не определено.")
+    # В новой версии python-telegram-bot v20+ job'ы хранятся иначе
+    jobs = context.application.job_queue.get_jobs_by_name("post_image_job")
+    if not jobs:
+        await update.message.reply_text("Задача рассылки не найдена.")
         return
+    
+    next_run_time = jobs[0].next_t
+    if not next_run_time:
+        await update.message.reply_text("Время следующего запуска не определено.")
+        return
+
     now = datetime.now(timezone.utc)
-    time_remaining = job.next_t - now
+    time_remaining = next_run_time - now
+    
     if time_remaining.total_seconds() > 0:
         hours, rem = divmod(int(time_remaining.total_seconds()), 3600)
         minutes, seconds = divmod(rem, 60)
@@ -339,9 +347,21 @@ async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "Рассылка должна была уже начаться или начнется с минуты на минуту."
     await update.message.reply_text(message)
 
+# <<< ИЗМЕНЕННАЯ ФУНКЦИЯ >>>
 async def post_init(application: Application):
-    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}", allowed_updates=Update.ALL_TYPES)
-    logger.info(f"Вебхук установлен на {WEBHOOK_URL}/{BOT_TOKEN}")
+    """Проверяет и устанавливает вебхук при запуске."""
+    try:
+        webhook_info = await application.bot.get_webhook_info()
+        target_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+
+        if webhook_info.url != target_url:
+            await application.bot.set_webhook(url=target_url, allowed_updates=Update.ALL_TYPES)
+            logger.info(f"Установлен новый вебхук: {target_url}")
+        else:
+            logger.info(f"Вебхук уже настроен на {target_url}. Пропускаем установку.")
+    except Exception as e:
+        logger.error(f"Ошибка при установке вебхука: {e}")
+
 
 def main() -> None:
     ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
@@ -358,10 +378,11 @@ def main() -> None:
 
     job_queue = ptb_app.job_queue
     if job_queue:
-        post_job = job_queue.run_repeating(post_image_job, interval=10800)
-        ptb_app.bot_data['post_job'] = post_job
+        # Добавляем имя для задачи, чтобы ее было легче найти
+        job_queue.run_repeating(post_image_job, interval=10800, name="post_image_job")
 
-    ptb_app.run_webhook(listen="0.0.0.0", port=PORT, webhook_url=WEBHOOK_URL)
+    # Убираем webhook_url из run_webhook, так как он уже устанавливается в post_init
+    ptb_app.run_webhook(listen="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
