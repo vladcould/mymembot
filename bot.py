@@ -15,7 +15,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+# WEBHOOK_URL должен быть базовым, например: https://myapp.onrender.com
+WEBHOOK_URL_BASE = os.environ.get("WEBHOOK_URL") 
 PORT = int(os.environ.get("PORT", 8443))
 
 # --- Конфигурация Cloudinary ---
@@ -38,6 +39,8 @@ IMAGE_PROGRESS_KEY = "telegram_bot_image_progress"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# Уменьшаем "шум" от библиотеки httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- Функции для работы с данными Redis ---
@@ -85,7 +88,6 @@ async def handle_user_posting(context: ContextTypes.DEFAULT_TYPE, all_images: li
         logger.info("Пользователи для рассылки не найдены.")
         return
 
-    # Получаем актуальный список изображений, так как для каналов могли что-то удалить
     try:
         response = cloudinary.api.resources_by_asset_folder(
             CLOUDINARY_FOLDER, type="upload", max_results=500
@@ -120,7 +122,6 @@ async def handle_user_posting(context: ContextTypes.DEFAULT_TYPE, all_images: li
         except Exception as e:
             logger.error(f"Ошибка при удалении файла {image_public_id} из Cloudinary: {e}")
 
-# <<< ИСПРАВЛЕННАЯ ЛОГИКА ДЛЯ КАНАЛОВ >>>
 async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images: list):
     """Обрабатывает рассылку по каналам (уникальное изображение для каждого)."""
     logger.info("Начало рассылки по каналам.")
@@ -137,34 +138,27 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
     progress = load_dict_data(IMAGE_PROGRESS_KEY)
     all_channels_set = set(channels)
     
-    # Создаем копию списка, из которой будем удалять использованные картинки
     images_pool = all_images.copy()
     random.shuffle(images_pool)
 
-    # 1. Отправляем по одному изображению в каждый канал
     for channel_id in channels:
         image_sent_to_channel = False
-        # Итерируемся в обратном порядке, чтобы безопасно удалять элементы
         for i in range(len(images_pool) - 1, -1, -1):
             image = images_pool[i]
             public_id = image['public_id']
             
-            # Проверяем, было ли это изображение уже отправлено в ЭТОТ канал
             if channel_id not in progress.get(public_id, []):
                 try:
                     await context.bot.send_photo(chat_id=channel_id, photo=image['secure_url'])
                     logger.info(f"Отправлено изображение {public_id} в канал {channel_id}.")
                     
-                    # Обновляем прогресс
                     progress.setdefault(public_id, []).append(channel_id)
                     
-                    # Удаляем использованное изображение из пула для ЭТОГО запуска,
-                    # чтобы оно не было отправлено в другой канал сейчас же.
                     del images_pool[i]
                     
                     image_sent_to_channel = True
                     await asyncio.sleep(0.1)
-                    break # Переходим к следующему каналу
+                    break 
 
                 except Exception as e:
                     logger.error(f"Не удалось отправить {public_id} в {channel_id}: {e}")
@@ -173,13 +167,11 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
             logger.warning(f"Для канала {channel_id} не нашлось ни одного нового изображения.")
             await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Внимание! Для канала {channel_id} закончились уникальные изображения. Цикл скоро начнется заново.")
 
-    # 2. Проверяем, какие изображения завершили свой цикл
     completed_ids = []
     for public_id, sent_to_channels in progress.items():
         if all_channels_set.issubset(set(sent_to_channels)):
             completed_ids.append(public_id)
     
-    # 3. Удаляем завершенные изображения
     if completed_ids:
         logger.info(f"Найдены завершенные изображения для удаления: {completed_ids}")
         try:
@@ -194,7 +186,6 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
             if public_id in progress:
                 del progress[public_id]
             
-    # 4. Сохраняем обновленный прогресс в Redis
     save_dict_data(IMAGE_PROGRESS_KEY, progress)
 
 
@@ -212,13 +203,12 @@ async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Ошибка при получении списка файлов из Cloudinary: {e}")
         return
 
-    # Запускаем обе логики
     await handle_channel_posting(context, all_images)
     await handle_user_posting(context, all_images)
     logger.info("Основная задача по отправке изображений завершена.")
 
 
-# --- Обработчик сохранения фото (без изменений) ---
+# --- Обработчик сохранения фото ---
 async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Получаю картинку и загружаю в облако...")
     photo = update.message.photo[-1]
@@ -237,7 +227,7 @@ async def save_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"Произошла ошибка при сохранении в облако: {e}")
 
 
-# --- Команды бота (без изменений) ---
+# --- Команды бота ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     all_users = load_list_data(USERS_KEY)
@@ -321,11 +311,12 @@ async def force_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def unauthorized_user_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Извините, эта команда только для администратора.")
 
+# <<< ИСПРАВЛЕННАЯ КОМАНДА >>>
 async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await unauthorized_user_reply(update, context)
         return
-    # В новой версии python-telegram-bot v20+ job'ы хранятся иначе
+        
     jobs = context.application.job_queue.get_jobs_by_name("post_image_job")
     if not jobs:
         await update.message.reply_text("Задача рассылки не найдена.")
@@ -347,25 +338,13 @@ async def next_post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "Рассылка должна была уже начаться или начнется с минуты на минуту."
     await update.message.reply_text(message)
 
-# <<< ИЗМЕНЕННАЯ ФУНКЦИЯ >>>
-async def post_init(application: Application):
-    """Проверяет и устанавливает вебхук при запуске."""
-    try:
-        webhook_info = await application.bot.get_webhook_info()
-        target_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
-
-        if webhook_info.url != target_url:
-            await application.bot.set_webhook(url=target_url, allowed_updates=Update.ALL_TYPES)
-            logger.info(f"Установлен новый вебхук: {target_url}")
-        else:
-            logger.info(f"Вебхук уже настроен на {target_url}. Пропускаем установку.")
-    except Exception as e:
-        logger.error(f"Ошибка при установке вебхука: {e}")
-
-
+# <<< УПРОЩЕННАЯ И ИСПРАВЛЕННАЯ ФУНКЦИЯ MAIN >>>
 def main() -> None:
-    ptb_app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    """Запускает бота."""
+    # Создаем приложение. post_init удален.
+    ptb_app = Application.builder().token(BOT_TOKEN).build()
     
+    # Добавляем обработчики команд
     ptb_app.add_handler(CommandHandler("start", start))
     ptb_app.add_handler(CommandHandler("stop", stop))
     ptb_app.add_handler(CommandHandler("addchannel", add_channel))
@@ -376,13 +355,18 @@ def main() -> None:
     ptb_app.add_handler(CommandHandler("nextpost", next_post_command))
     ptb_app.add_handler(MessageHandler(filters.PHOTO & filters.User(user_id=ADMIN_USER_ID) & ~filters.COMMAND, save_photo_handler))
 
+    # Настраиваем повторяющуюся задачу
     job_queue = ptb_app.job_queue
     if job_queue:
-        # Добавляем имя для задачи, чтобы ее было легче найти
         job_queue.run_repeating(post_image_job, interval=10800, name="post_image_job")
 
-    # Убираем webhook_url из run_webhook, так как он уже устанавливается в post_init
-    ptb_app.run_webhook(listen="0.0.0.0", port=PORT)
+    # Запускаем вебхук. Библиотека сама позаботится о его установке.
+    # Она автоматически создаст URL вида: WEBHOOK_URL_BASE/BOT_TOKEN
+    ptb_app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL_BASE
+    )
 
 if __name__ == "__main__":
     main()
