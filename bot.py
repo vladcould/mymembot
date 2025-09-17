@@ -160,7 +160,7 @@ async def handle_channel_posting(context: ContextTypes.DEFAULT_TYPE, all_images:
 async def post_image_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск основной задачи по отправке изображений.")
     try:
-        response = cloudinary.api.resources_by_asset_folder(CLOUDINARY_FOLDER, type="upload", max_results=500)
+        response = cloudinary.api.resources_by_asset_folder(CLOUDINARY_FOLDER, type="upload", max_results=250)
         all_images = response.get('resources', [])
     except Exception as e:
         logger.error(f"Критическая ошибка: не удалось получить список файлов из Cloudinary: {e}")
@@ -343,3 +343,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
